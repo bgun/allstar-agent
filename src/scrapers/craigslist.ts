@@ -36,9 +36,12 @@ export async function searchCraigslist(
     lat: String(lat),
     lon: String(lon),
     search_distance: String(search_distance),
+    bundleDuplicates: '1',
+    condition: '60',
+    hasPic: '1',
   };
 
-  const browseUrl = `https://${city}.craigslist.org/search/${city}-co/pta?query=${encodeURIComponent(query)}&lat=${lat}&lon=${lon}&search_distance=${search_distance}`;
+  const browseUrl = `https://${city}.craigslist.org/search/${city}-co/pta?query=${encodeURIComponent(query)}&lat=${lat}&lon=${lon}&search_distance=${search_distance}&bundleDuplicates=1&condition=60&hasPic=1`;
 
   const { data } = await axios.get(apiUrl, {
     params,
