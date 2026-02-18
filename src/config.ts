@@ -16,7 +16,7 @@ export const config = {
 
   // Hardcoded settings
   SEARCH_QUERY: 'headlight',
-  CRAIGSLIST_ENABLED: true,
+  CRAIGSLIST_ENABLED: false,
   CRAIGSLIST_CITY: 'denver',
   CRAIGSLIST_LAT: '39.6654',
   CRAIGSLIST_LON: '-105.1062',
