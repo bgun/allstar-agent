@@ -140,7 +140,7 @@ export async function searchEbay(
 
   const params: Record<string, string | number> = {
     q: buildQuery(query, prefs),
-    limit: 100,
+    limit: 200,
     sort: prefs.sort || 'newlyListed',
   };
 
