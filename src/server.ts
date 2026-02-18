@@ -45,8 +45,8 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // GET /health
-  if (req.method === 'GET' && url.pathname === '/health') {
+  // GET / or /health
+  if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
     json(res, 200, { status: 'ok', isRunning, currentRunId });
     return;
   }
