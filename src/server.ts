@@ -3,7 +3,6 @@ import { runPipeline } from './pipeline.js';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const AGENT_API_TOKEN = process.env.AGENT_API_TOKEN || '';
-const SCHEDULE_INTERVAL_MS = 4 * 60 * 60 * 1000; // 4 hours
 
 let isRunning = false;
 let currentRunId: string | null = null;
@@ -80,18 +79,6 @@ const server = http.createServer((req, res) => {
 export function startServer() {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`[server] Agent HTTP server listening on port ${PORT}`);
+    console.log(`[server] Runs are manual-only — use POST /trigger to start`);
   });
-
-  // Schedule runs every 4 hours
-  console.log(`[server] Scheduling pipeline every ${SCHEDULE_INTERVAL_MS / 3600000}h`);
-  setInterval(() => {
-    if (isRunning) {
-      console.log('[server] Skipping scheduled run — already running');
-      return;
-    }
-    console.log('[server] Starting scheduled run...');
-    triggerRun(false).catch((err) => {
-      console.error(`[server] Scheduled run failed: ${err instanceof Error ? err.message : err}`);
-    });
-  }, SCHEDULE_INTERVAL_MS);
 }
