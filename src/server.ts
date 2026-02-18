@@ -1,5 +1,22 @@
 import http from 'node:http';
 import { runPipeline } from './pipeline.js';
+import { parseEbayItemId, fetchEbayItem } from './scrapers/ebay.js';
+import { fetchCraigslistItem } from './scrapers/craigslist.js';
+import {
+  createRun,
+  updateRun,
+  logEvent,
+  upsertListings,
+  getActiveCriteria,
+  getDisagreements,
+  getAgreements,
+  insertGrade,
+} from './db.js';
+import {
+  buildSystemPrompt,
+  gradeListing,
+} from './grader.js';
+import type { ScrapedListing } from './scrapers/types.js';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const AGENT_API_TOKEN = process.env.AGENT_API_TOKEN || '';
@@ -16,6 +33,15 @@ function authenticate(req: http.IncomingMessage): boolean {
   if (!AGENT_API_TOKEN) return true; // no token configured = open (dev mode)
   const auth = req.headers.authorization;
   return auth === `Bearer ${AGENT_API_TOKEN}`;
+}
+
+function readBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString()));
+    req.on('error', reject);
+  });
 }
 
 async function triggerRun(dryRun: boolean): Promise<string> {
@@ -69,6 +95,138 @@ const server = http.createServer((req, res) => {
 
     triggerRun(dryRun).catch((err) => {
       console.error(`[server] Pipeline error: ${err instanceof Error ? err.message : err}`);
+    });
+    return;
+  }
+
+  // POST /grade-url
+  if (req.method === 'POST' && url.pathname === '/grade-url') {
+    if (!authenticate(req)) {
+      json(res, 401, { error: 'Unauthorized' });
+      return;
+    }
+
+    readBody(req).then(async (body) => {
+      try {
+        const { url: listingUrl } = JSON.parse(body) as { url?: string };
+        if (!listingUrl || typeof listingUrl !== 'string') {
+          json(res, 400, { error: 'Missing or invalid "url" field' });
+          return;
+        }
+
+        // Detect source from URL
+        let source: 'ebay' | 'craigslist';
+        if (/ebay\.com/i.test(listingUrl)) {
+          source = 'ebay';
+        } else if (/craigslist\.org/i.test(listingUrl)) {
+          source = 'craigslist';
+        } else {
+          json(res, 400, { error: 'URL must be from ebay.com or craigslist.org' });
+          return;
+        }
+
+        // Scrape the single item
+        let scraped: ScrapedListing;
+        if (source === 'ebay') {
+          const itemId = parseEbayItemId(listingUrl);
+          scraped = await fetchEbayItem(itemId);
+        } else {
+          scraped = await fetchCraigslistItem(listingUrl);
+        }
+
+        // Upsert listing to DB
+        const stored = await upsertListings([scraped]);
+        if (stored.length === 0) {
+          json(res, 500, { error: 'Failed to store listing' });
+          return;
+        }
+        const listingId = stored[0]!.id;
+
+        // Load criteria + feedback
+        const criteria = await getActiveCriteria();
+        const disagreements = await getDisagreements(20);
+        const agreements = await getAgreements(5);
+        const systemPrompt = buildSystemPrompt(criteria.criteria_prompt, disagreements, agreements);
+
+        // Create a mini run
+        const runId = await createRun(criteria.version);
+        await logEvent(runId, 'grade_started', listingId, {
+          title: scraped.title,
+          source,
+          manual: true,
+        });
+
+        // Grade the listing
+        const listing = {
+          id: listingId,
+          title: scraped.title,
+          price: scraped.price,
+          price_cents: scraped.price_cents,
+          link: scraped.link,
+          image: scraped.image,
+          source: scraped.source,
+          external_id: scraped.external_id,
+          condition: scraped.condition,
+          listing_date: scraped.listing_date,
+          location: scraped.location,
+          seller_name: scraped.seller_name,
+          description: scraped.description,
+        };
+
+        const result = await gradeListing(listing, systemPrompt, false);
+
+        // Insert grade
+        await insertGrade({
+          listing_id: listingId,
+          prompt_version: criteria.version,
+          score: result.score,
+          grade: result.grade,
+          rationale: result.rationale,
+          flags: result.flags,
+          model: 'claude-sonnet-4-5-20250929',
+        });
+
+        await logEvent(runId, 'grade_completed', listingId, {
+          score: result.score,
+          grade: result.grade,
+        });
+
+        // Finalize run
+        await updateRun(runId, {
+          status: 'completed',
+          finished_at: new Date().toISOString(),
+          listings_scraped: 1,
+          listings_graded: 1,
+          listings_failed: 0,
+          average_score: result.score,
+        });
+
+        await logEvent(runId, 'run_completed', null, {
+          listings_scraped: 1,
+          listings_graded: 1,
+          listings_failed: 0,
+          average_score: result.score,
+          manual: true,
+        });
+
+        json(res, 200, {
+          listing_id: listingId,
+          run_id: runId,
+          title: scraped.title,
+          price: scraped.price,
+          image: scraped.image,
+          source,
+          link: scraped.link,
+          grade: result.grade,
+          score: result.score,
+          rationale: result.rationale,
+          flags: result.flags,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[grade-url] Error: ${msg}`);
+        json(res, 500, { error: msg });
+      }
     });
     return;
   }

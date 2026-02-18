@@ -1,4 +1,5 @@
 import axios from 'axios';
+import * as cheerio from 'cheerio';
 import type { ScrapedListing } from './types.js';
 
 interface CraigslistOptions {
@@ -127,4 +128,60 @@ export async function searchCraigslist(
   });
 
   return { items: results, url: browseUrl };
+}
+
+export function parseCraigslistPostingId(url: string): string {
+  // Handles: craigslist.org/.../d/title/1234567890.html
+  const match = url.match(/(\d+)\.html/);
+  if (!match) throw new Error(`Could not parse Craigslist posting ID from URL: ${url}`);
+  return match[1]!;
+}
+
+export async function fetchCraigslistItem(url: string): Promise<ScrapedListing> {
+  const postingId = parseCraigslistPostingId(url);
+
+  const { data: html } = await axios.get(url, {
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    },
+  });
+
+  const $ = cheerio.load(html);
+
+  const title = $('#titletextonly').text().trim() || $('title').text().trim();
+  const priceText = $('.price').first().text().trim() || null;
+  const priceCents = priceText
+    ? Math.round(parseFloat(priceText.replace(/[^0-9.]/g, '')) * 100) || null
+    : null;
+  const description = $('#postingbody').text().replace(/QR Code Link to This Post/i, '').trim() || null;
+  const location = $('.postingtitletext small').text().replace(/[()]/g, '').trim() || null;
+
+  // Collect image URLs
+  const images: string[] = [];
+  $('a.thumb').each((_, el) => {
+    const href = $(el).attr('href');
+    if (href) images.push(href);
+  });
+  if (images.length === 0) {
+    // Fallback: try the main gallery image
+    const mainImg = $('div.slide img').first().attr('src');
+    if (mainImg) images.push(mainImg);
+  }
+
+  return {
+    title,
+    price: priceText,
+    price_cents: priceCents,
+    link: url,
+    image: images[0] || null,
+    source: 'craigslist' as const,
+    external_id: postingId,
+    condition: null,
+    listing_date: $('time.date.timeago').attr('datetime') || null,
+    location,
+    seller_name: null,
+    description,
+    raw_data: { posting_id: postingId, url, image_urls: images },
+  };
 }

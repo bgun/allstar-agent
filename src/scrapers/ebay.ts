@@ -30,12 +30,12 @@ const DEFAULT_PREFERENCES: Required<EbayPreferences> = {
 let cachedToken: string | null = null;
 let tokenExpiresAt = 0;
 
-function getBaseUrl(): string {
+export function getBaseUrl(): string {
   const isSandbox = config.EBAY_APP_ID.includes('SBX');
   return isSandbox ? SANDBOX_BASE : PRODUCTION_BASE;
 }
 
-async function getOAuthToken(): Promise<string> {
+export async function getOAuthToken(): Promise<string> {
   if (cachedToken && Date.now() < tokenExpiresAt) {
     return cachedToken;
   }
@@ -207,4 +207,56 @@ export async function searchEbay(
   );
 
   return { items, url: constructedUrl };
+}
+
+export function parseEbayItemId(url: string): string {
+  // Handles: ebay.com/itm/123456, ebay.com/itm/some-title/123456, etc.
+  const match = url.match(/ebay\.com\/itm\/(?:[^/]+\/)?(\d+)/);
+  if (!match) throw new Error(`Could not parse eBay item ID from URL: ${url}`);
+  return match[1]!;
+}
+
+export async function fetchEbayItem(itemId: string): Promise<ScrapedListing> {
+  const token = await getOAuthToken();
+  const baseUrl = getBaseUrl();
+
+  const { data: item } = await axios.get(
+    `${baseUrl}/buy/browse/v1/item/v1|${itemId}|0`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+      },
+    }
+  );
+
+  const price = item.price as PriceObject | undefined;
+  const image = item.image as { imageUrl?: string } | undefined;
+  const itemLocation = item.itemLocation as {
+    city?: string;
+    stateOrProvince?: string;
+  } | undefined;
+  const seller = item.seller as { username?: string } | undefined;
+
+  return {
+    title: item.title as string,
+    price: formatPriceUsd(price),
+    price_cents: price?.value
+      ? Math.round(parseFloat(price.value) * 100)
+      : null,
+    link: item.itemWebUrl as string | null,
+    image: image?.imageUrl || null,
+    source: 'ebay' as const,
+    external_id: item.itemId as string,
+    condition: (item.condition as string) || null,
+    listing_date: (item.itemCreationDate as string) || null,
+    location: itemLocation
+      ? [itemLocation.city, itemLocation.stateOrProvince]
+          .filter(Boolean)
+          .join(', ')
+      : null,
+    seller_name: seller?.username || null,
+    description: (item.shortDescription as string) || (item.description as string) || null,
+    raw_data: item as Record<string, unknown>,
+  };
 }
