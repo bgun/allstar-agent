@@ -19,8 +19,8 @@ interface EbayPreferences {
 const DEFAULT_PREFERENCES: Required<EbayPreferences> = {
   category_id: '33710',
   condition_ids: ['3000'],
-  excluded_keywords: ['parting out', 'whole car', 'complete vehicle'],
-  buying_options: ['FIXED_PRICE', 'BEST_OFFER', 'AUCTION'],
+  excluded_keywords: ['parting out', 'whole car', 'complete vehicle', 'harness', 'bracket', 'sensor', 'connector'],
+  buying_options: ['FIXED_PRICE', 'BEST_OFFER'],
   sort: 'newlyListed',
   max_price: '500',
   brand_type_oem: true,
@@ -104,6 +104,8 @@ function buildAspectFilter(prefs: EbayPreferences): string | undefined {
   if (prefs.origin_us) {
     aspects.push('Country/Region of Manufacture:{United States}');
   }
+
+  aspects.push('Type:{Headlight Assembly}');
 
   if (!aspects.length) return undefined;
   return `categoryId:${prefs.category_id},${aspects.join(',')}`;
