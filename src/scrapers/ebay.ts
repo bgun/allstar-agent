@@ -220,8 +220,12 @@ export async function fetchEbayItem(itemId: string): Promise<ScrapedListing> {
   const token = await getOAuthToken();
   const baseUrl = getBaseUrl();
 
+  // eBay Browse API expects the legacy item ID in the format v1|{id}|0
+  // Pipes must be URL-encoded as %7C in the path
+  const encodedItemId = `v1%7C${itemId}%7C0`;
+
   const { data: item } = await axios.get(
-    `${baseUrl}/buy/browse/v1/item/v1|${itemId}|0`,
+    `${baseUrl}/buy/browse/v1/item/${encodedItemId}`,
     {
       headers: {
         Authorization: `Bearer ${token}`,
