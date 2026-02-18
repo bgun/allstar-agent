@@ -11,6 +11,7 @@ import {
   getDisagreements,
   getAgreements,
   insertGrade,
+  getListingStats,
 } from './db.js';
 import {
   buildSystemPrompt,
@@ -23,6 +24,7 @@ const AGENT_API_TOKEN = process.env.AGENT_API_TOKEN || '';
 
 let isRunning = false;
 let currentRunId: string | null = null;
+let currentAbortController: AbortController | null = null;
 
 function json(res: http.ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -47,12 +49,14 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 async function triggerRun(dryRun: boolean, triggeredBy?: string): Promise<string> {
   isRunning = true;
   currentRunId = null;
+  currentAbortController = new AbortController();
   try {
-    const runId = await runPipeline({ dryRun, triggeredBy });
+    const runId = await runPipeline({ dryRun, triggeredBy, abortSignal: currentAbortController.signal });
     currentRunId = runId;
     return runId;
   } finally {
     isRunning = false;
+    currentAbortController = null;
   }
 }
 
@@ -239,6 +243,43 @@ const server = http.createServer((req, res) => {
         json(res, 500, { error: msg });
       }
     });
+    return;
+  }
+
+  // POST /stop
+  if (req.method === 'POST' && url.pathname === '/stop') {
+    if (!authenticate(req)) {
+      json(res, 401, { error: 'Unauthorized' });
+      return;
+    }
+
+    if (!isRunning || !currentAbortController) {
+      json(res, 409, { error: 'No run is currently in progress' });
+      return;
+    }
+
+    currentAbortController.abort();
+    json(res, 200, { message: 'Stop signal sent' });
+    return;
+  }
+
+  // GET /stats
+  if (req.method === 'GET' && url.pathname === '/stats') {
+    if (!authenticate(req)) {
+      json(res, 401, { error: 'Unauthorized' });
+      return;
+    }
+
+    (async () => {
+      try {
+        const criteria = await getActiveCriteria();
+        const stats = await getListingStats(criteria.version);
+        json(res, 200, { ...stats, prompt_version: criteria.version });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        json(res, 500, { error: msg });
+      }
+    })();
     return;
   }
 

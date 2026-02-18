@@ -4,6 +4,7 @@ import {
   updateRun,
   logEvent,
   upsertListings,
+  deduplicateListings,
   getUngradedListings,
   getActiveCriteria,
   getDisagreements,
@@ -18,7 +19,7 @@ function ts(): string {
   return new Date().toISOString();
 }
 
-export async function runPipeline(opts: { dryRun: boolean; triggeredBy?: string }): Promise<string> {
+export async function runPipeline(opts: { dryRun: boolean; triggeredBy?: string; abortSignal?: AbortSignal }): Promise<string> {
   console.log(`[${ts()}] Allstar Agent starting...`);
   console.log(`[${ts()}] Dry run: ${opts.dryRun}`);
   console.log(`[${ts()}] Search query: "${config.SEARCH_QUERY}"`);
@@ -73,18 +74,34 @@ export async function runPipeline(opts: { dryRun: boolean; triggeredBy?: string 
       allListings.push(...clResult.items);
     }
 
-    // Step 5: Upsert all scraped listings
-    console.log(`[${ts()}] Upserting ${allListings.length} listings...`);
-    const stored = await upsertListings(allListings);
-    console.log(`[${ts()}] Stored ${stored.length} listings`);
-    await logEvent(runId, 'listings_stored', null, { count: stored.length });
+    // Step 5: Deduplicate against existing DB listings
+    console.log(`[${ts()}] Deduplicating ${allListings.length} scraped listings...`);
+    const { unique, duplicatesSkipped } = await deduplicateListings(allListings);
+    console.log(`[${ts()}] ${duplicatesSkipped} duplicates skipped, ${unique.length} new listings`);
 
-    await updateRun(runId, { listings_scraped: allListings.length });
+    // Step 6: Upsert new listings
+    console.log(`[${ts()}] Upserting ${unique.length} listings...`);
+    const stored = await upsertListings(unique);
+    console.log(`[${ts()}] Stored ${stored.length} listings`);
+    await logEvent(runId, 'listings_stored', null, {
+      count: stored.length,
+      duplicates_skipped: duplicatesSkipped,
+    });
+
+    await updateRun(runId, {
+      listings_scraped: allListings.length,
+      duplicates_skipped: duplicatesSkipped,
+    });
 
     // Step 6: Fetch ungraded listings
     console.log(`[${ts()}] Fetching ungraded listings for prompt version "${criteria.version}"...`);
     const ungraded = await getUngradedListings(criteria.version);
     console.log(`[${ts()}] Found ${ungraded.length} ungraded listings`);
+
+    // Check for abort before grading
+    if (opts.abortSignal?.aborted) {
+      throw new Error('Run was stopped by user');
+    }
 
     if (ungraded.length === 0) {
       console.log(`[${ts()}] No ungraded listings — skipping grading`);
@@ -99,6 +116,7 @@ export async function runPipeline(opts: { dryRun: boolean; triggeredBy?: string 
         listings_scraped: allListings.length,
         listings_graded: 0,
         listings_failed: 0,
+        duplicates_skipped: duplicatesSkipped,
         triggered_by: opts.triggeredBy || null,
       });
       console.log(`[${ts()}] Run completed (no grading needed)`);
@@ -126,6 +144,7 @@ export async function runPipeline(opts: { dryRun: boolean; triggeredBy?: string 
         dryRun: opts.dryRun,
         runId,
         promptVersion: criteria.version,
+        abortSignal: opts.abortSignal,
       }
     );
 
@@ -145,6 +164,7 @@ export async function runPipeline(opts: { dryRun: boolean; triggeredBy?: string 
       listings_graded: stats.graded,
       listings_failed: stats.failed,
       average_score: stats.averageScore,
+      duplicates_skipped: duplicatesSkipped,
       triggered_by: opts.triggeredBy || null,
     });
 

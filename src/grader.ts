@@ -163,6 +163,7 @@ export async function gradeInBatches(
     dryRun: boolean;
     runId: string;
     promptVersion: string;
+    abortSignal?: AbortSignal;
   }
 ): Promise<GradeStats> {
   let graded = 0;
@@ -173,6 +174,11 @@ export async function gradeInBatches(
   const systemPrompt = buildSystemPrompt(criteria, disagreements, agreements);
 
   for (let i = 0; i < listings.length; i += opts.batchSize) {
+    if (opts.abortSignal?.aborted) {
+      console.log(`[${ts()}] Run stopped by user — graded ${graded} so far`);
+      break;
+    }
+
     const batch = listings.slice(i, i + opts.batchSize);
     const batchNum = Math.floor(i / opts.batchSize) + 1;
     const totalBatches = Math.ceil(listings.length / opts.batchSize);

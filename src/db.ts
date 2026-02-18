@@ -107,6 +107,48 @@ export async function logEvent(
 
 // ---------- Listings ----------
 
+export interface DedupeResult {
+  unique: ScrapedListing[];
+  duplicatesSkipped: number;
+}
+
+export async function deduplicateListings(
+  listings: ScrapedListing[]
+): Promise<DedupeResult> {
+  if (listings.length === 0) return { unique: listings, duplicatesSkipped: 0 };
+
+  // Collect external_ids to check against DB
+  const externalIds = listings
+    .map((l) => l.external_id)
+    .filter((id): id is string => !!id);
+
+  if (externalIds.length === 0) return { unique: listings, duplicatesSkipped: 0 };
+
+  // Query existing listings by external_id + source
+  const { data: existing, error } = await supabase
+    .from('listings')
+    .select('external_id, source')
+    .in('external_id', externalIds);
+
+  if (error) {
+    console.warn(`Failed to check duplicates: ${error.message}`);
+    return { unique: listings, duplicatesSkipped: 0 };
+  }
+
+  const existingSet = new Set(
+    (existing ?? []).map((row: { external_id: string; source: string }) => `${row.source}:${row.external_id}`)
+  );
+
+  const unique = listings.filter(
+    (l) => !l.external_id || !existingSet.has(`${l.source}:${l.external_id}`)
+  );
+
+  return {
+    unique,
+    duplicatesSkipped: listings.length - unique.length,
+  };
+}
+
 export async function upsertListings(
   listings: ScrapedListing[]
 ): Promise<StoredListing[]> {
@@ -313,4 +355,25 @@ export async function insertGrade(grade: GradeRow): Promise<void> {
   });
 
   if (error) throw new Error(`Failed to insert grade: ${error.message}`);
+}
+
+// ---------- Stats ----------
+
+export async function getListingStats(promptVersion: string): Promise<{
+  total: number;
+  graded: number;
+  ungraded: number;
+}> {
+  const [totalRes, gradedRes] = await Promise.all([
+    supabase.from('listings').select('id', { count: 'exact', head: true }),
+    supabase
+      .from('grades')
+      .select('id', { count: 'exact', head: true })
+      .eq('prompt_version', promptVersion),
+  ]);
+
+  const total = totalRes.count ?? 0;
+  const graded = gradedRes.count ?? 0;
+
+  return { total, graded, ungraded: total - graded };
 }
