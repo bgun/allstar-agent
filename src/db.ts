@@ -57,13 +57,14 @@ const supabase: SupabaseClient = createClient(
 
 // ---------- Run management ----------
 
-export async function createRun(promptVersion: string): Promise<string> {
+export async function createRun(promptVersion: string, triggeredBy?: string): Promise<string> {
   const { data, error } = await supabase
     .from('agent_runs')
     .insert({
       status: 'running',
       prompt_version: promptVersion,
       started_at: new Date().toISOString(),
+      triggered_by: triggeredBy || null,
     })
     .select('id')
     .single();

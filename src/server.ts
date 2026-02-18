@@ -44,11 +44,11 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
-async function triggerRun(dryRun: boolean): Promise<string> {
+async function triggerRun(dryRun: boolean, triggeredBy?: string): Promise<string> {
   isRunning = true;
   currentRunId = null;
   try {
-    const runId = await runPipeline({ dryRun });
+    const runId = await runPipeline({ dryRun, triggeredBy });
     currentRunId = runId;
     return runId;
   } finally {
@@ -90,11 +90,21 @@ const server = http.createServer((req, res) => {
 
     const dryRun = url.searchParams.get('dry_run') === 'true';
 
-    // Fire and forget — return 202 immediately
-    json(res, 202, { message: 'Run started', dryRun });
+    // Read body for triggered_by, then fire and forget
+    readBody(req).then((body) => {
+      let triggeredBy: string | undefined;
+      try {
+        const parsed = JSON.parse(body) as { triggered_by?: string };
+        triggeredBy = parsed.triggered_by || undefined;
+      } catch {
+        // No body or invalid JSON is fine — triggered_by is optional
+      }
 
-    triggerRun(dryRun).catch((err) => {
-      console.error(`[server] Pipeline error: ${err instanceof Error ? err.message : err}`);
+      json(res, 202, { message: 'Run started', dryRun });
+
+      triggerRun(dryRun, triggeredBy).catch((err) => {
+        console.error(`[server] Pipeline error: ${err instanceof Error ? err.message : err}`);
+      });
     });
     return;
   }
@@ -108,7 +118,7 @@ const server = http.createServer((req, res) => {
 
     readBody(req).then(async (body) => {
       try {
-        const { url: listingUrl } = JSON.parse(body) as { url?: string };
+        const { url: listingUrl, triggered_by: triggeredBy } = JSON.parse(body) as { url?: string; triggered_by?: string };
         if (!listingUrl || typeof listingUrl !== 'string') {
           json(res, 400, { error: 'Missing or invalid "url" field' });
           return;
@@ -149,7 +159,7 @@ const server = http.createServer((req, res) => {
         const systemPrompt = buildSystemPrompt(criteria.criteria_prompt, disagreements, agreements);
 
         // Create a mini run
-        const runId = await createRun(criteria.version);
+        const runId = await createRun(criteria.version, triggeredBy || undefined);
         await logEvent(runId, 'grade_started', listingId, {
           title: scraped.title,
           source,
@@ -207,6 +217,7 @@ const server = http.createServer((req, res) => {
           listings_failed: 0,
           average_score: result.score,
           manual: true,
+          triggered_by: triggeredBy || null,
         });
 
         json(res, 200, {
@@ -228,6 +239,28 @@ const server = http.createServer((req, res) => {
         json(res, 500, { error: msg });
       }
     });
+    return;
+  }
+
+  // GET /system-prompt
+  if (req.method === 'GET' && url.pathname === '/system-prompt') {
+    if (!authenticate(req)) {
+      json(res, 401, { error: 'Unauthorized' });
+      return;
+    }
+
+    (async () => {
+      try {
+        const criteria = await getActiveCriteria();
+        const disagreements = await getDisagreements(20);
+        const agreements = await getAgreements(5);
+        const systemPrompt = buildSystemPrompt(criteria.criteria_prompt, disagreements, agreements);
+        json(res, 200, { prompt: systemPrompt, version: criteria.version });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        json(res, 500, { error: msg });
+      }
+    })();
     return;
   }
 

@@ -18,7 +18,7 @@ function ts(): string {
   return new Date().toISOString();
 }
 
-export async function runPipeline(opts: { dryRun: boolean }): Promise<string> {
+export async function runPipeline(opts: { dryRun: boolean; triggeredBy?: string }): Promise<string> {
   console.log(`[${ts()}] Allstar Agent starting...`);
   console.log(`[${ts()}] Dry run: ${opts.dryRun}`);
   console.log(`[${ts()}] Search query: "${config.SEARCH_QUERY}"`);
@@ -30,7 +30,7 @@ export async function runPipeline(opts: { dryRun: boolean }): Promise<string> {
   console.log(`[${ts()}] Using prompt version: ${criteria.version}`);
 
   // Step 2: Create agent run
-  const runId = await createRun(criteria.version);
+  const runId = await createRun(criteria.version, opts.triggeredBy);
   console.log(`[${ts()}] Created run: ${runId}`);
 
   try {
@@ -99,6 +99,7 @@ export async function runPipeline(opts: { dryRun: boolean }): Promise<string> {
         listings_scraped: allListings.length,
         listings_graded: 0,
         listings_failed: 0,
+        triggered_by: opts.triggeredBy || null,
       });
       console.log(`[${ts()}] Run completed (no grading needed)`);
       return runId;
@@ -144,6 +145,7 @@ export async function runPipeline(opts: { dryRun: boolean }): Promise<string> {
       listings_graded: stats.graded,
       listings_failed: stats.failed,
       average_score: stats.averageScore,
+      triggered_by: opts.triggeredBy || null,
     });
 
     console.log(`[${ts()}] Run ${runId} completed successfully`);
