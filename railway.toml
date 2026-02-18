@@ -3,5 +3,4 @@ builder = "nixpacks"
 
 [deploy]
 startCommand = "npx tsx src/index.ts"
-restartPolicyType = "never"
-cronSchedule = "0 */4 * * *"
+restartPolicyType = "on_failure"

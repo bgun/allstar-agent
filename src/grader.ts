@@ -19,16 +19,16 @@ export interface GradeStats {
   averageScore: number;
 }
 
-export function buildPrompt(
+// --- Prompt caching: split into system (cached) + user (per-listing) ---
+
+export function buildSystemPrompt(
   criteria: string,
-  listing: Listing,
   disagreements: Feedback[],
   agreements: Feedback[]
 ): string {
-  let prompt = `You are an expert automotive parts grader. Grade the following listing based on these criteria:\n\n`;
+  let prompt = `You are an expert automotive parts grader. Grade listings based on these criteria:\n\n`;
   prompt += `${criteria}\n\n`;
 
-  // Past disagreements for learning
   if (disagreements.length > 0) {
     prompt += `--- LEARN FROM THESE PAST DISAGREEMENTS ---\n`;
     prompt += `These are cases where the buyer disagreed with the AI's grade. Adjust your grading to align with the buyer's expectations.\n\n`;
@@ -43,7 +43,6 @@ export function buildPrompt(
     prompt += `\n`;
   }
 
-  // Well-graded examples
   if (agreements.length > 0) {
     prompt += `--- EXAMPLES OF WELL-GRADED LISTINGS ---\n`;
     prompt += `These are cases where the buyer agreed with the AI's grade.\n\n`;
@@ -53,18 +52,6 @@ export function buildPrompt(
     }
     prompt += `\n`;
   }
-
-  // Listing to grade
-  prompt += `--- LISTING TO GRADE ---\n`;
-  prompt += `Title: ${listing.title}\n`;
-  prompt += `Price: ${listing.price ?? 'N/A'}\n`;
-  prompt += `Condition: ${listing.condition ?? 'N/A'}\n`;
-  prompt += `Location: ${listing.location ?? 'N/A'}\n`;
-  prompt += `Seller: ${listing.seller_name ?? 'N/A'}\n`;
-  prompt += `Description: ${listing.description ?? 'N/A'}\n`;
-  prompt += `Image: ${listing.image ? 'Yes (1)' : 'No'}\n`;
-  prompt += `URL: ${listing.link ?? 'N/A'}\n`;
-  prompt += `Source: ${listing.source}\n\n`;
 
   prompt += `Respond with ONLY a JSON object (no markdown, no code fences) in this exact format:\n`;
   prompt += `{\n`;
@@ -77,9 +64,23 @@ export function buildPrompt(
   return prompt;
 }
 
+export function buildUserMessage(listing: Listing): string {
+  let msg = `--- LISTING TO GRADE ---\n`;
+  msg += `Title: ${listing.title}\n`;
+  msg += `Price: ${listing.price ?? 'N/A'}\n`;
+  msg += `Condition: ${listing.condition ?? 'N/A'}\n`;
+  msg += `Location: ${listing.location ?? 'N/A'}\n`;
+  msg += `Seller: ${listing.seller_name ?? 'N/A'}\n`;
+  msg += `Description: ${listing.description ?? 'N/A'}\n`;
+  msg += `Image: ${listing.image ? 'Yes (1)' : 'No'}\n`;
+  msg += `URL: ${listing.link ?? 'N/A'}\n`;
+  msg += `Source: ${listing.source}\n`;
+  return msg;
+}
+
 export async function gradeListing(
   listing: Listing,
-  prompt: string,
+  systemPrompt: string,
   dryRun: boolean
 ): Promise<GradeResult> {
   if (dryRun) {
@@ -94,10 +95,17 @@ export async function gradeListing(
   const message = await anthropic.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 512,
+    system: [
+      {
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
     messages: [
       {
         role: 'user',
-        content: prompt,
+        content: buildUserMessage(listing),
       },
     ],
   });
@@ -105,6 +113,16 @@ export async function gradeListing(
   const textBlock = message.content.find((block) => block.type === 'text');
   if (!textBlock || textBlock.type !== 'text') {
     throw new Error('No text response from Claude');
+  }
+
+  // Log cache performance
+  const usage = message.usage as unknown as Record<string, number | undefined>;
+  const cacheRead = usage.cache_read_input_tokens ?? 0;
+  const cacheCreated = usage.cache_creation_input_tokens ?? 0;
+  if (cacheRead > 0 || cacheCreated > 0) {
+    console.log(
+      `[grader] Cache: created=${cacheCreated}, read=${cacheRead}, input=${usage.input_tokens ?? 0}`
+    );
   }
 
   const raw = textBlock.text.trim();
@@ -118,7 +136,6 @@ export async function gradeListing(
 
   const parsed = JSON.parse(jsonStr) as GradeResult;
 
-  // Validate
   if (
     typeof parsed.score !== 'number' ||
     typeof parsed.grade !== 'string' ||
@@ -152,6 +169,9 @@ export async function gradeInBatches(
   let failed = 0;
   let totalScore = 0;
 
+  // Build the system prompt once — it gets cached by Anthropic for ~5 min
+  const systemPrompt = buildSystemPrompt(criteria, disagreements, agreements);
+
   for (let i = 0; i < listings.length; i += opts.batchSize) {
     const batch = listings.slice(i, i + opts.batchSize);
     const batchNum = Math.floor(i / opts.batchSize) + 1;
@@ -170,14 +190,7 @@ export async function gradeInBatches(
             title: listing.title,
           });
 
-          const prompt = buildPrompt(
-            criteria,
-            listing,
-            disagreements,
-            agreements
-          );
-
-          const result = await gradeListing(listing, prompt, opts.dryRun);
+          const result = await gradeListing(listing, systemPrompt, opts.dryRun);
 
           const gradeRow: GradeRow = {
             listing_id: listing.id,
@@ -207,7 +220,6 @@ export async function gradeInBatches(
         } else {
           failed++;
           console.error(`[${ts()}] Grade failed:`, r.reason);
-          // Log failure but don't throw
           await logEvent(opts.runId, 'grade_failed', null, {
             error: String(r.reason),
           });
