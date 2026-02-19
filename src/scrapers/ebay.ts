@@ -221,20 +221,32 @@ export function parseEbayItemId(url: string): string {
 export async function fetchEbayItem(itemId: string): Promise<ScrapedListing> {
   const token = await getOAuthToken();
   const baseUrl = getBaseUrl();
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
+  };
 
-  // eBay Browse API expects the legacy item ID in the format v1|{id}|0
-  // Pipes must be URL-encoded as %7C in the path
+  let item: Record<string, unknown>;
+
+  // Try direct getItem first (works for single-variation listings)
   const encodedItemId = `v1%7C${itemId}%7C0`;
+  try {
+    const { data } = await axios.get(
+      `${baseUrl}/buy/browse/v1/item/${encodedItemId}`,
+      { headers }
+    );
+    item = data;
+  } catch (err: unknown) {
+    const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+    if (status !== 404) throw err;
 
-  const { data: item } = await axios.get(
-    `${baseUrl}/buy/browse/v1/item/${encodedItemId}`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-      },
-    }
-  );
+    // Item may be a multi-variation group — fetch via item group endpoint
+    const { data } = await axios.get(
+      `${baseUrl}/buy/browse/v1/item/get_items_by_item_group`,
+      { params: { item_group_id: itemId }, headers }
+    );
+    item = data.items[0] as Record<string, unknown>;
+  }
 
   const price = item.price as PriceObject | undefined;
   const image = item.image as { imageUrl?: string } | undefined;
