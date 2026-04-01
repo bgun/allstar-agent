@@ -1,10 +1,33 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { ChatAnthropic } from '@langchain/anthropic';
+import { ChatPromptTemplate } from '@langchain/core/prompts';
+import { z } from 'zod';
 import type { Listing, Feedback, GradeRow } from './db.js';
 import { insertGrade, logEvent } from './db.js';
 
-const anthropic = new Anthropic();
-
 const CLAUDE_MODEL = 'claude-sonnet-4-5-20250929';
+
+export const gradeResultSchema = z.object({
+  score: z.number().min(0).max(100),
+  grade: z.enum(['A', 'B', 'C', 'D', 'F']),
+  rationale: z.string(),
+  flags: z.array(z.string()),
+});
+
+const chatModel = new ChatAnthropic({
+  model: CLAUDE_MODEL,
+  maxTokens: 512,
+});
+
+const prompt = ChatPromptTemplate.fromMessages([
+  ['system', '{systemPrompt}'],
+  ['human', '{userMessage}'],
+]);
+
+const gradingChain = prompt.pipe(chatModel.withStructuredOutput(gradeResultSchema));
+
+export function createGradingChain() {
+  return gradingChain;
+}
 
 export interface GradeResult {
   score: number;
@@ -81,7 +104,8 @@ export function buildUserMessage(listing: Listing): string {
 export async function gradeListing(
   listing: Listing,
   systemPrompt: string,
-  dryRun: boolean
+  dryRun: boolean,
+  metadata?: { runId?: string }
 ): Promise<GradeResult> {
   if (dryRun) {
     return {
@@ -92,63 +116,25 @@ export async function gradeListing(
     };
   }
 
-  const message = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 512,
-    system: [
-      {
-        type: 'text',
-        text: systemPrompt,
-        cache_control: { type: 'ephemeral' },
+  const result = await gradingChain.invoke(
+    {
+      systemPrompt,
+      userMessage: buildUserMessage(listing),
+    },
+    {
+      metadata: {
+        run_id: metadata?.runId,
+        listing_id: listing.id,
+        listing_title: listing.title,
       },
-    ],
-    messages: [
-      {
-        role: 'user',
-        content: buildUserMessage(listing),
-      },
-    ],
-  });
-
-  const textBlock = message.content.find((block) => block.type === 'text');
-  if (!textBlock || textBlock.type !== 'text') {
-    throw new Error('No text response from Claude');
-  }
-
-  // Log cache performance
-  const usage = message.usage as unknown as Record<string, number | undefined>;
-  const cacheRead = usage.cache_read_input_tokens ?? 0;
-  const cacheCreated = usage.cache_creation_input_tokens ?? 0;
-  if (cacheRead > 0 || cacheCreated > 0) {
-    console.log(
-      `[grader] Cache: created=${cacheCreated}, read=${cacheRead}, input=${usage.input_tokens ?? 0}`
-    );
-  }
-
-  const raw = textBlock.text.trim();
-
-  // Try to extract JSON even if wrapped in code fences
-  let jsonStr = raw;
-  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenceMatch) {
-    jsonStr = fenceMatch[1]!.trim();
-  }
-
-  const parsed = JSON.parse(jsonStr) as GradeResult;
-
-  if (
-    typeof parsed.score !== 'number' ||
-    typeof parsed.grade !== 'string' ||
-    typeof parsed.rationale !== 'string'
-  ) {
-    throw new Error(`Invalid grade response structure: ${raw}`);
-  }
+    }
+  );
 
   return {
-    score: parsed.score,
-    grade: parsed.grade,
-    rationale: parsed.rationale,
-    flags: Array.isArray(parsed.flags) ? parsed.flags : [],
+    score: result.score,
+    grade: result.grade,
+    rationale: result.rationale,
+    flags: result.flags,
   };
 }
 
@@ -196,7 +182,9 @@ export async function gradeInBatches(
             title: listing.title,
           });
 
-          const result = await gradeListing(listing, systemPrompt, opts.dryRun);
+          const result = await gradeListing(listing, systemPrompt, opts.dryRun, {
+            runId: opts.runId,
+          });
 
           const gradeRow: GradeRow = {
             listing_id: listing.id,
