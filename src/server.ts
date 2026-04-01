@@ -187,7 +187,9 @@ const server = http.createServer((req, res) => {
           description: scraped.description,
         };
 
-        const result = await gradeListing(listing, systemPrompt, false);
+        const result = await gradeListing(listing, systemPrompt, false, {
+          runId,
+        });
 
         // Insert grade
         await insertGrade({
