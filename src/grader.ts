@@ -42,7 +42,7 @@ export interface GradeStats {
   averageScore: number;
 }
 
-// --- Prompt caching: split into system (cached) + user (per-listing) ---
+// --- Prompt builders ---
 
 export function buildSystemPrompt(
   criteria: string,
@@ -75,14 +75,6 @@ export function buildSystemPrompt(
     }
     prompt += `\n`;
   }
-
-  prompt += `Respond with ONLY a JSON object (no markdown, no code fences) in this exact format:\n`;
-  prompt += `{\n`;
-  prompt += `  "score": <number 0-100>,\n`;
-  prompt += `  "grade": "<A|B|C|D|F>",\n`;
-  prompt += `  "rationale": "<1-2 sentence explanation>",\n`;
-  prompt += `  "flags": [<array of string flags like "price_high", "no_image", "vague_title", etc.>]\n`;
-  prompt += `}\n`;
 
   return prompt;
 }
@@ -156,7 +148,7 @@ export async function gradeInBatches(
   let failed = 0;
   let totalScore = 0;
 
-  // Build the system prompt once — it gets cached by Anthropic for ~5 min
+  // Build the system prompt once for the entire batch
   const systemPrompt = buildSystemPrompt(criteria, disagreements, agreements);
 
   for (let i = 0; i < listings.length; i += opts.batchSize) {
